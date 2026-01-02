@@ -1,0 +1,5 @@
+{
+  "name": "CatScore: Evaluador Nutricional Felino",
+  "description": "Una herramienta avanzada para analizar la calidad de alimentos para gatos basándose en etiquetas reales, utilizando IA para procesar texto OCR y aplicando criterios nutricionales FEDIAF.",
+  "requestFramePermissions": []
+}
