@@ -6,27 +6,31 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export async function parseFoodLabel(name: string, guaranteedAnalysis: string, ingredientsText: string) {
   const prompt = `
-    Eres un experto en nutrición felina de clase mundial. Extrae la información nutricional de este texto (puede tener errores de OCR).
-    
+    ROL: Transcriptor Técnico Neutral.
+    MISION: Extraer datos de la etiqueta de alimento para gatos sin evaluar.
+    REGLA DE ORO: No uses palabras como "bueno", "malo", "estándar", "pobre", "bajo" o "alto". No emitas juicios.
+
+    --- INSTRUCCIONES ---
+    1. ANALISIS GARANTIZADO: Extrae los porcentajes tal cual aparecen. Si dice "TAMRINA", asume que es Taurina.
+    2. INGREDIENTES: Identifica si el ingrediente #1 es animal, si los 3 primeros lo son, si hay proteínas vegetales (soya, gluten, maíz) y si hay cláusulas "y/o".
+    3. SUMMARY (Lectura de Etiqueta): Escribe una descripción técnica objetiva de 2 líneas imitando una lectura humana profesional.
+       Ejemplo: "Primer ingrediente: [Nombre]. Contiene [X]% proteína. Lista con formulación variable (y/o) y presencia de [ingredientes]."
+
+    DATOS:
     PRODUCTO: ${name}
-    ANÁLISIS: ${guaranteedAnalysis}
+    ANALISIS: ${guaranteedAnalysis}
     INGREDIENTES: ${ingredientsText}
 
-    REGLAS DE ORO PARA VALORES NUMÉRICOS:
-    1. TAURINA: Suele estar entre 0.05% y 0.25%. Si ves un valor como 1500, asume mg/kg y conviértelo a % (1500 / 10000 = 0.15%). NUNCA devuelvas valores > 2.0% para taurina.
-    2. CALCIO/FÓSFORO/SODIO: Si los valores están en g/kg o mg/kg, conviértelos a PORCENTAJE (%). 10g/kg = 1.0%.
-    3. SODIO: Busca específicamente "Sodio" o "Sal". Si dice "Sal 0.5%", el sodio es aprox 0.2%.
-    4. OMEGAS: Busca Omega 3 y Omega 6.
-    5. Si un valor es obviamente erróneo (ej. Proteína 800%), corrígelo según el promedio de la industria o déjalo nulo.
-
-    ANÁLISIS DE INGREDIENTES:
-    - Identifica: Vitaminas (A, D, E, complejo B), Minerales Quelados, Taurina, Sal añadida, Fuentes de Omega.
-    - hasEssentialVitamins: true solo si incluye A, D, E y complejo B explícitamente.
-    - hasSaltInIngredients: true si aparece "sal", "cloruro de sodio" o similar en la lista.
+    JSON:
+    {
+      "nutrients": { "protein": float, "fat": float, "moisture": float, "fiber": float, "ash": float, "calcium": float, "phosphorus": float, "sodium": float, "taurine": float, "magnesium": float },
+      "ingredients": { "firstIngredientAnimal": bool, "meatInTopThree": bool, "hasVegetableProtein": bool, "hasGluten": bool, "fractionatedCereals": bool, "hasGenericByproducts": bool, "hasVariableFormulation": bool, "hasTaurineAdded": bool, "hasChelatedMinerals": bool, "hasOmegaSources": bool, "hasEssentialVitamins": bool, "hasSaltInIngredients": bool },
+      "summary": "Texto de lectura técnica"
+    }
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: 'gemini-3-flash-preview',
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -36,17 +40,16 @@ export async function parseFoodLabel(name: string, guaranteedAnalysis: string, i
           nutrients: {
             type: Type.OBJECT,
             properties: {
-              protein: { type: Type.NUMBER },
-              fat: { type: Type.NUMBER },
-              moisture: { type: Type.NUMBER },
-              fiber: { type: Type.NUMBER },
-              ash: { type: Type.NUMBER },
-              calcium: { type: Type.NUMBER },
-              phosphorus: { type: Type.NUMBER },
-              sodium: { type: Type.NUMBER },
-              omega3: { type: Type.NUMBER },
-              omega6: { type: Type.NUMBER },
-              taurine: { type: Type.NUMBER }
+              protein: { type: Type.NUMBER, nullable: true },
+              fat: { type: Type.NUMBER, nullable: true },
+              moisture: { type: Type.NUMBER, nullable: true },
+              fiber: { type: Type.NUMBER, nullable: true },
+              ash: { type: Type.NUMBER, nullable: true },
+              calcium: { type: Type.NUMBER, nullable: true },
+              phosphorus: { type: Type.NUMBER, nullable: true },
+              sodium: { type: Type.NUMBER, nullable: true },
+              taurine: { type: Type.NUMBER, nullable: true },
+              magnesium: { type: Type.NUMBER, nullable: true }
             }
           },
           ingredients: {
@@ -62,7 +65,6 @@ export async function parseFoodLabel(name: string, guaranteedAnalysis: string, i
               hasTaurineAdded: { type: Type.BOOLEAN },
               hasChelatedMinerals: { type: Type.BOOLEAN },
               hasOmegaSources: { type: Type.BOOLEAN },
-              hasExcessiveSalt: { type: Type.BOOLEAN },
               hasEssentialVitamins: { type: Type.BOOLEAN },
               hasSaltInIngredients: { type: Type.BOOLEAN }
             }

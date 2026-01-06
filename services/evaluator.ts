@@ -16,164 +16,119 @@ export function evaluateFood(
   const warnings: string[] = [];
   const observations: string[] = [];
 
-  const disclaimer = "Para conocer el valor real exacto de los nutrientes no declarados, se recomienda contactar directamente al fabricante.";
+  // 1. Normalización y manejo de omisiones
+  const keys: (keyof Nutrients)[] = ['protein', 'fat', 'taurine', 'calcium', 'phosphorus', 'sodium', 'magnesium'];
+  
+  keys.forEach(key => {
+    let val = rawNutrients[key];
+    if (val === undefined || val === null) return;
 
-  // Normalización a Materia Seca
-  Object.entries(rawNutrients).forEach(([key, value]) => {
-    if (typeof value === 'number') {
-      let val = value;
-      if (key === 'taurine' && val > 2.0) val = val / 10000;
-      if (key !== 'moisture') (dmNutrients as any)[key] = val * dmFactor;
-    }
+    if (val >= 50 && val < 1000) val = val / 10;
+    else if (val >= 1000) val = val / 10000;
+
+    (dmNutrients as any)[key] = val * dmFactor;
   });
 
-  // Estimaciones si faltan datos
-  if (!dmNutrients.taurine && ingredients.hasTaurineAdded) {
-    dmNutrients.taurine = NUTRITIONAL_TARGETS.TAURINE.min; 
-    assumptions.push(`Taurina: Estimada al mínimo (${NUTRITIONAL_TARGETS.TAURINE.min}% MS) por mención en ingredientes.`);
-  }
-  if (!dmNutrients.calcium && ingredients.hasChelatedMinerals) {
-    dmNutrients.calcium = NUTRITIONAL_TARGETS.MINERALS.CALCIUM.min;
-    assumptions.push(`Calcio: Estimado al mínimo (${NUTRITIONAL_TARGETS.MINERALS.CALCIUM.min}% MS) por suplementación.`);
-  }
-  if (!dmNutrients.phosphorus && dmNutrients.calcium) {
-    dmNutrients.phosphorus = dmNutrients.calcium / NUTRITIONAL_TARGETS.RATIOS.CA_P_IDEAL;
-    assumptions.push(`Fósforo: Estimado para balancear el calcio (${dmNutrients.phosphorus.toFixed(2)}% MS).`);
+  // --- LOGICA DE PUNTUACION PURAMENTE ADITIVA (Decimales para exactitud) ---
+  let proteinPoints = 0;   // Max 30
+  let essentialPoints = 0; // Max 40
+  let qualityPoints = 0;   // Max 30
+
+  // A. PROTEINA (30 pts)
+  if (dmNutrients.protein) {
+    // 5 pts por cumplir mínimo FEDIAF
+    if (dmNutrients.protein >= NUTRITIONAL_TARGETS.PROTEIN.min) {
+      proteinPoints += 5;
+    }
+    // Hasta 10 pts extra por acercarse al ideal del 38%
+    if (dmNutrients.protein > NUTRITIONAL_TARGETS.PROTEIN.min) {
+      const pRange = NUTRITIONAL_TARGETS.PROTEIN.ideal - NUTRITIONAL_TARGETS.PROTEIN.min;
+      const progress = Math.min(1, (dmNutrients.protein - NUTRITIONAL_TARGETS.PROTEIN.min) / pRange);
+      proteinPoints += progress * 10;
+    }
+    
+    // Puntos por calidad de fuente animal
+    if (ingredients.firstIngredientAnimal) proteinPoints += 7.5;
+    if (ingredients.meatInTopThree) proteinPoints += 7.5;
+    
+    if (ingredients.firstIngredientAnimal) observations.push("Proteína de base animal.");
+    else warnings.push("Base proteica principal vegetal (relleno).");
   }
 
-  // --- PUNTAJE (0-100) ---
-  let proteinScore = 0;      // Max 20
-  let fatScore = 0;          // Max 10
-  let taurineScore = 0;      // Max 10
-  let mineralScore = 0;      // Max 15 (Ca:P + Quelatos)
-  let ingredientScore = 0;   // Max 30 (Top3, No Vegetal, No Sal)
-  let transparencyScore = 0; // Max 15 (Subproductos, Vitaminas)
-
-  // 1. Proteína (Max 20) - Ideal 38%
-  const protein = dmNutrients.protein || 0;
-  if (protein >= NUTRITIONAL_TARGETS.PROTEIN.ideal && protein <= NUTRITIONAL_TARGETS.PROTEIN.max) {
-    proteinScore = 20;
-    observations.push("Proteína en nivel ideal (38% MS o más).");
-  } else if (protein >= NUTRITIONAL_TARGETS.PROTEIN.min) {
-    // Proximidad lineal
-    const pRange = NUTRITIONAL_TARGETS.PROTEIN.ideal - NUTRITIONAL_TARGETS.PROTEIN.min;
-    const pCurrent = protein - NUTRITIONAL_TARGETS.PROTEIN.min;
-    proteinScore = 5 + (pCurrent / pRange) * 15;
-  } else {
-    proteinScore = (protein / NUTRITIONAL_TARGETS.PROTEIN.min) * 5;
-    warnings.push("Deficiencia crítica de proteína.");
+  // B. NUTRIENTES ESENCIALES (40 pts)
+  // Grasa (10 pts)
+  if (dmNutrients.fat) {
+    if (dmNutrients.fat >= NUTRITIONAL_TARGETS.FAT.min && dmNutrients.fat <= NUTRITIONAL_TARGETS.FAT.max) {
+      // 10 puntos si está en el rango recomendado
+      essentialPoints += 10;
+    }
   }
 
-  // 2. Grasa (Max 10) - Ideal 9%, "más o menos no bueno"
-  const fat = dmNutrients.fat || 0;
-  const fatDiff = Math.abs(fat - NUTRITIONAL_TARGETS.FAT.ideal);
-  if (fatDiff === 0) {
-    fatScore = 10;
-    observations.push("Grasa en el nivel ideal absoluto (9% MS).");
-  } else if (fatDiff < 10) {
-    fatScore = Math.max(0, 10 - fatDiff); // Pierde 1 punto por cada 1% de desviación
-  } else {
-    warnings.push("Nivel de grasa muy alejado del ideal (9% MS).");
+  // Taurina (10 pts)
+  const tTarget = NUTRITIONAL_TARGETS.TAURINE.ideal;
+  if (dmNutrients.taurine) {
+    if (dmNutrients.taurine >= tTarget) {
+      essentialPoints += 10;
+    } else {
+      warnings.push(`Taurina insuficiente para el ideal (${dmNutrients.taurine.toFixed(2)}% vs 0.20%).`);
+    }
+  } else if (ingredients.hasTaurineAdded) {
+    const fediafMin = moisture > 50 ? NUTRITIONAL_TARGETS.TAURINE.min_wet : NUTRITIONAL_TARGETS.TAURINE.min_dry;
+    // Si se asume el mínimo (0.1%), no suma los 10 puntos del ideal (0.2%)
+    assumptions.push(`Taurina: valor no declarado pero presente en ingredientes por lo que se asume el mínimo legal (${fediafMin}% según la FEDIAF). Para saber el valor real, consulte al fabricante.`);
+    if (fediafMin >= tTarget) essentialPoints += 10;
   }
 
-  // 3. Taurina (Max 10) - Ideal 0.2%
-  const taurine = dmNutrients.taurine || 0;
-  if (taurine >= NUTRITIONAL_TARGETS.TAURINE.ideal) {
-    taurineScore = 10;
-    observations.push("Excelente aporte de Taurina.");
-  } else if (taurine >= NUTRITIONAL_TARGETS.TAURINE.min) {
-    const tRange = NUTRITIONAL_TARGETS.TAURINE.ideal - NUTRITIONAL_TARGETS.TAURINE.min;
-    const tCurrent = taurine - NUTRITIONAL_TARGETS.TAURINE.min;
-    taurineScore = 5 + (tCurrent / tRange) * 5;
-  } else {
-    taurineScore = 0;
-    warnings.push("Nivel de Taurina insuficiente.");
+  // Vitaminas (10 pts)
+  if (ingredients.hasEssentialVitamins) {
+    essentialPoints += 10;
   }
 
-  // 4. Minerales y Ratio Ca:P (Max 15)
+  // Minerales (10 pts total, 2.5 c/u)
+  if (dmNutrients.calcium && dmNutrients.calcium >= NUTRITIONAL_TARGETS.MINERALS.CALCIUM.min && dmNutrients.calcium <= NUTRITIONAL_TARGETS.MINERALS.CALCIUM.max) essentialPoints += 2.5;
+  if (dmNutrients.phosphorus && dmNutrients.phosphorus >= NUTRITIONAL_TARGETS.MINERALS.PHOSPHORUS.min && dmNutrients.phosphorus <= NUTRITIONAL_TARGETS.MINERALS.PHOSPHORUS.max) essentialPoints += 2.5;
+  if (dmNutrients.sodium !== undefined && dmNutrients.sodium <= NUTRITIONAL_TARGETS.MINERALS.SODIUM.max) essentialPoints += 2.5;
+  if (dmNutrients.magnesium !== undefined && dmNutrients.magnesium <= NUTRITIONAL_TARGETS.MINERALS.MAGNESIUM.max) essentialPoints += 2.5;
+
+  // C. CALIDAD Y TRANSPARENCIA (30 pts)
+  // Ratio Ca:P (10 pts)
   if (dmNutrients.calcium && dmNutrients.phosphorus) {
     const ratio = dmNutrients.calcium / dmNutrients.phosphorus;
-    if (ratio >= 1.0 && ratio <= 1.8) {
-      const rDiff = Math.abs(ratio - 1.2);
-      mineralScore += 10 * (1 - rDiff / 0.6); // Escala según cercanía a 1.2
-      if (rDiff < 0.1) observations.push("Ratio Calcio:Fósforo óptimo.");
-    } else {
-      mineralScore -= 5;
-      warnings.push(`Ratio Ca:P fuera de rango (${ratio.toFixed(2)}:1).`);
-    }
-  }
-  if (ingredients.hasChelatedMinerals) {
-    mineralScore += 5;
-    observations.push("Incluye minerales quelados de alta absorción.");
+    if (ratio >= 1.0 && ratio <= 1.5) qualityPoints += 10;
+    else if (ratio > 1.5 && ratio <= 1.8) qualityPoints += 5;
   }
 
-  // 5. Omega 3:6 Ratio (Max 5)
-  if (dmNutrients.omega3 && dmNutrients.omega6) {
-    if (dmNutrients.omega3 >= dmNutrients.omega6) {
-      ingredientScore += 5;
-      observations.push("Excelente balance Omega 3:6 (Omega 3 >= Omega 6).");
-    } else {
-      warnings.push("Exceso de Omega 6 frente a Omega 3.");
-    }
-  } else if (ingredients.hasOmegaSources) {
-    ingredientScore += 2; // Puntos parciales por tener fuentes pero no declarar valores
-  }
-
-  // 6. Ingredientes (Max 25 restantes de ingredientScore + transparencyScore)
-  // Top 3 Animales (Max 10)
-  if (ingredients.meatInTopThree) {
-    ingredientScore += 10;
-    observations.push("Los primeros 3 ingredientes son de origen animal.");
-  } else if (ingredients.firstIngredientAnimal) {
-    ingredientScore += 5;
-    observations.push("El primer ingrediente es de origen animal.");
-  }
-
-  // Sin Sal añadida (Max 5)
-  if (!ingredients.hasSaltInIngredients) {
-    ingredientScore += 5;
-    observations.push("Sin sal ni cloruro de sodio añadido en ingredientes.");
+  // Transparencia (10 pts) - Antes "Honestidad"
+  if (!ingredients.hasVariableFormulation) {
+    qualityPoints += 10;
   } else {
-    warnings.push("Contiene sal añadida en la lista de ingredientes.");
+    warnings.push("Uso de 'y/o' en ingredientes: Transparencia nula.");
   }
 
-  // Pureza (No vegetales/rellenos) (Max 10)
-  let purityBonus = 10;
-  if (ingredients.hasVegetableProtein) purityBonus -= 4;
-  if (ingredients.hasGluten) purityBonus -= 4;
-  if (ingredients.fractionatedCereals) purityBonus -= 2;
-  ingredientScore += Math.max(0, purityBonus);
-
-  // 7. Transparencia y Vitaminas (Max 15)
-  let transBonus = 15;
-  if (ingredients.hasGenericByproducts) {
-    transBonus -= 10;
-    warnings.push("Uso de subproductos genéricos: falta de honestidad en etiqueta.");
+  // Pureza (10 pts)
+  if (!ingredients.hasGenericByproducts && !ingredients.hasVegetableProtein) {
+    qualityPoints += 10;
   }
-  if (ingredients.hasVariableFormulation) transBonus -= 5;
-  
-  if (ingredients.hasEssentialVitamins) {
-    transBonus += 5; // Bonus por completar el pack vitamínico
-    observations.push("Pack completo de vitaminas esenciales (A, D, E, B).");
-  }
-  transparencyScore = Math.max(0, transBonus);
 
-  // Consolidación final
+  // CÁLCULO FINAL
+  const totalRaw = proteinPoints + essentialPoints + qualityPoints;
+  const score = Math.max(0, Math.min(100, parseFloat(totalRaw.toFixed(2))));
+
+  // Granular Scores para el UI
   const granularScores: GranularScores = {
-    animalProtein: Math.max(0, Math.min(25, proteinScore + (ingredientScore * 0.2))),
-    fillersAndCereals: Math.max(0, Math.min(25, transparencyScore + (ingredientScore * 0.2))),
-    transparency: Math.max(0, Math.min(25, transparencyScore)),
-    additives: Math.max(0, Math.min(25, taurineScore + mineralScore + fatScore))
+    animalProtein: parseFloat(((proteinPoints / 30) * 25).toFixed(2)),
+    fillersAndCereals: parseFloat(((qualityPoints / 30) * 25).toFixed(2)),
+    transparency: ingredients.hasVariableFormulation ? 0 : 25,
+    additives: parseFloat(((essentialPoints / 40) * 25).toFixed(2))
   };
 
-  let totalScore = proteinScore + fatScore + taurineScore + mineralScore + ingredientScore + transparencyScore;
-  totalScore = Math.max(0, Math.min(100, Math.round(totalScore)));
-
+  // Ajuste de Tiers para diferenciar mejor las gamas
   let tier = FoodTier.D;
-  if (totalScore >= 90) tier = FoodTier.S;
-  else if (totalScore >= 75) tier = FoodTier.A;
-  else if (totalScore >= 60) tier = FoodTier.B;
-  else if (totalScore >= 40) tier = FoodTier.C;
+  if (score >= 88) tier = FoodTier.S;
+  else if (score >= 72) tier = FoodTier.A;
+  else if (score >= 58) tier = FoodTier.B;
+  else if (score >= 42) tier = FoodTier.C; // Cat Chow debería caer aquí
+  else tier = FoodTier.D; // Don Kat debería caer aquí
 
   return {
     id: Math.random().toString(36).substr(2, 9),
@@ -182,7 +137,7 @@ export function evaluateFood(
     rawNutrients,
     dryMatterNutrients: dmNutrients,
     ingredients,
-    score: totalScore,
+    score,
     granularScores,
     tier,
     summary: aiSummary,

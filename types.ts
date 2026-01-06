@@ -20,7 +20,7 @@ export interface Nutrients {
   potassium?: number;
   omega3?: number;
   omega6?: number;
-  taurine?: number; // can be percentage or mg/kg
+  taurine?: number;
 }
 
 export interface IngredientAnalysis {
@@ -35,8 +35,8 @@ export interface IngredientAnalysis {
   hasChelatedMinerals: boolean;
   hasOmegaSources: boolean;
   hasExcessiveSalt: boolean;
-  hasEssentialVitamins: boolean; // Vit A, D, E, B complex
-  hasSaltInIngredients: boolean; // Si aparece "sal" o "cloruro de sodio"
+  hasEssentialVitamins: boolean;
+  hasSaltInIngredients: boolean;
 }
 
 export interface GranularScores {
